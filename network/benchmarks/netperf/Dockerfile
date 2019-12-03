@@ -21,12 +21,12 @@
 #
 # Args: --mode=worker --host=<service cluster ip> --port=5202
 #
-FROM debian:jessie
+FROM ubuntu:latest
 
-MAINTAINER Girish Kalele <gkalele@google.com>
+MAINTAINER Sebastian Stauch
 # install binary and remove cache
 RUN apt-get update \
-    && apt-get install -y iperf3 curl wget net-tools gcc make \
+    && apt-get install -y iperf3 qperf curl wget net-tools gcc make \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /tmp
 

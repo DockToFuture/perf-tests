@@ -41,14 +41,16 @@ import (
 )
 
 const (
-	debugLog         = "output.txt"
-	testNamespace    = "netperf"
-	csvDataMarker    = "GENERATING CSV OUTPUT"
-	csvEndDataMarker = "END CSV DATA"
-	runUUID          = "latest"
-	orchestratorPort = 5202
-	iperf3Port       = 5201
-	netperfPort      = 12865
+	debugLog             = "output.txt"
+	testNamespace        = "netperf"
+	latencyDataMarker    = "GENERATING LATENCY OUTPUT"
+	latencyEndDataMarker = "END LATENCY DATA"
+	csvDataMarker        = "GENERATING CSV OUTPUT"
+	csvEndDataMarker     = "END CSV DATA"
+	runUUID              = "latest"
+	orchestratorPort     = 5202
+	iperf3Port           = 5201
+	netperfPort          = 12865
 )
 
 var (
@@ -71,7 +73,7 @@ func init() {
 	flag.IntVar(&iterations, "iterations", 1,
 		"Number of iterations to run")
 	flag.StringVar(&tag, "tag", runUUID, "CSV file suffix")
-	flag.StringVar(&netperfImage, "image", "sirot/netperf-latest", "Docker image used to run the network tests")
+	flag.StringVar(&netperfImage, "image", "docktofuture/netperf-latest:latest", "Docker image used to run the network tests")
 	flag.StringVar(&kubeConfig, "kubeConfig", "",
 		"Location of the kube configuration file ($HOME/.kube/config")
 	flag.BoolVar(&cleanupOnly, "cleanup", false,
@@ -313,6 +315,23 @@ func getOrchestratorPodName(pods *api.PodList) string {
 	return ""
 }
 
+// getLatencyResultsFromPod get logs data from pod and extract latency data
+func getLatencyResultsFromPod(c *kubernetes.Clientset, podName string) *string {
+	body, err := c.CoreV1().Pods(testNamespace).GetLogs(podName, &api.PodLogOptions{Timestamps: false}).DoRaw()
+	if err != nil {
+		fmt.Printf("Error (%s) reading logs from pod %s", err, podName)
+		return nil
+	}
+	logData := string(body)
+	index := strings.Index(logData, latencyDataMarker)
+	endIndex := strings.Index(logData, latencyEndDataMarker)
+	if index == -1 || endIndex == -1 {
+		return nil
+	}
+	latencyData := string(body[index+len(latencyDataMarker)+1 : endIndex])
+	return &latencyData
+}
+
 // Retrieve the logs for the pod/container and check if csv data has been generated
 func getCsvResultsFromPod(c *kubernetes.Clientset, podName string) *string {
 	body, err := c.CoreV1().Pods(testNamespace).GetLogs(podName, &api.PodLogOptions{Timestamps: false}).DoRaw()
@@ -328,6 +347,25 @@ func getCsvResultsFromPod(c *kubernetes.Clientset, podName string) *string {
 	}
 	csvData := string(body[index+len(csvDataMarker)+1 : endIndex])
 	return &csvData
+}
+
+// processLatencyData : Process the LATENCY datafile
+func processLatencyData(latencyData *string) bool {
+	t := time.Now().UTC()
+	outputFileDirectory := fmt.Sprintf("results_%s-%s", testNamespace, tag)
+	outputFilePrefix := fmt.Sprintf("%s-%s_%s.", testNamespace, tag, t.Format("20060102150405"))
+	fmt.Printf("Test concluded - LATENCY raw data written to %s/%slatency\n", outputFileDirectory, outputFilePrefix)
+	if _, err := os.Stat(outputFileDirectory); os.IsNotExist(err) {
+		os.Mkdir(outputFileDirectory, 0766)
+	}
+	fd, err := os.OpenFile(fmt.Sprintf("%s/%slatency", outputFileDirectory, outputFilePrefix), os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		fmt.Println("ERROR writing output LATENCY datafile", err)
+		return false
+	}
+	fd.WriteString(*latencyData)
+	fd.Close()
+	return true
 }
 
 // processCsvData : Process the CSV datafile and generate line and bar graphs
@@ -380,13 +418,15 @@ func executeTests(c *kubernetes.Clientset) bool {
 		// The pods orchestrate themselves, we just wait for the results file to show up in the orchestrator container
 		for true {
 			// Monitor the orchestrator pod for the CSV results file
-			csvdata := getCsvResultsFromPod(c, orchestratorPodName)
-			if csvdata == nil {
+			csvData := getCsvResultsFromPod(c, orchestratorPodName)
+			latencyData := getLatencyResultsFromPod(c, orchestratorPodName)
+
+			if csvData == nil || latencyData == nil {
 				fmt.Println("Scanned orchestrator pod filesystem - no results file found yet...waiting for orchestrator to write CSV file...")
 				time.Sleep(60 * time.Second)
 				continue
 			}
-			if processCsvData(csvdata) {
+			if processCsvData(csvData) && processLatencyData(latencyData) {
 				break
 			}
 		}
